@@ -85,10 +85,14 @@ has 'playlist_item_cb' => (
     isa => 'CodeRef',
 );
 
-# this will be passed a FooPod::DB object
-# which describes the parsed db, as soon
-# as it is available
-has 'db_cb' => (
+# the album group can be seen as 'mhla'
+has 'album_group_cb' => (
+    is => 'ro',
+    isa => 'CodeRef',
+);
+
+# the album header can be seen as 'mhia'
+has 'album_header_cb' => (
     is => 'ro',
     isa => 'CodeRef',
 );
@@ -103,6 +107,13 @@ has 'track_cb' => (
 # this will be passed a FooPod::Playlist object
 # for every playlist that is encountered
 has 'playlist_cb' => (
+    is => 'ro',
+    isa => 'CodeRef',
+);
+
+# this will be passed a FooPod::Album object
+# for every album that is encountered
+has 'album_cb' => (
     is => 'ro',
     isa => 'CodeRef',
 );

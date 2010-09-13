@@ -10,7 +10,7 @@ has 'children' => (
     isa => 'Int',
 );
 
-has 'song_count' => (
+has 'songcount' => (
     is => 'rw',
     isa => 'Int',
 );

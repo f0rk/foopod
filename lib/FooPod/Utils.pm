@@ -93,7 +93,8 @@ sub read {
     my ($fh, $length) = @_;
 
     my $buffer = undef;
-    my $bytes_read = read($fh, $buffer, $length) or Carp::croak("read failed: $!");
+    my $bytes_read = read($fh, $buffer, $length);
+
     return ($bytes_read, $buffer);
 }
 

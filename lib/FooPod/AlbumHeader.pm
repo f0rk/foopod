@@ -1,22 +1,23 @@
-package FooPod::DB;
+package FooPod::AlbumHeader;
 
 use strict;
 use warnings;
 use Moose;
+with 'FooPod::Entry';
 
-has 'filesize' => (
+has 'children' => (
     is => 'rw',
     isa => 'Int',
 );
 
-has 'songcount' => (
+has 'albumid' => (
     is => 'rw',
     isa => 'Int',
 );
 
-has 'playlistcount' => (
+has 'dbid1' => (
     is => 'rw',
-    isa => 'Int',
+    isa => 'Hex',
 );
 
 1;

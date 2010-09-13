@@ -16,11 +16,15 @@ use FooPod::Atom;
 use FooPod::PlaylistHeader;
 use FooPod::PlaylistMetadata;
 use FooPod::PlaylistItem;
+use FooPod::AlbumGroup;
+use FooPod::AlbumHeader;
+use FooPod::PlaylistPref;
+use FooPod::PlaylistData;
 
 # high-level parse items
-use FooPod::DB;
 use FooPod::Track;
 use FooPod::Playlist;
+use FooPod::Album;
 
 # it's a parser
 with 'FooPod::Parser';
@@ -42,6 +46,8 @@ sub parse {
         mhlp => \&parse_playlist_header,
         mhyp => \&parse_playlist_metadata,
         mhip => \&parse_playlist_item, 
+        mhla => \&parse_album_group,
+        mhia => \&parse_album_header,
     );
 
     my %cb_dispatch = (
@@ -54,11 +60,13 @@ sub parse {
         mhlp => $self->playlist_header_cb,
         mhyp => $self->playlist_metadata_cb,
         mhip => $self->playlist_item_cb,
+        mhla => $self->album_group_cb,
+        mhia => $self->album_header_cb,
 
         # high-level
-        db => $self->db_cb,
         track => $self->track_cb,
         playlist => $self->playlist_cb,
+        album => $self->album_cb,
     );
 
     my $fh = FooPod::Utils::open('<', $self->path());
@@ -68,9 +76,9 @@ sub parse {
     $cb_dispatch{$db_header->entry_type()}($db_header) if defined($cb_dispatch{$db_header->entry_type()});
 
     # there will be state
-    my $first_group_header = 1; # whether or not this is the first of the 'group headers'
     my $last_track = undef; # for knowing which track the mhod atoms belong to
     my $last_playlist = undef;
+    my $last_album = undef;
 
     my $offset = $db_header->header_size();
     while($offset < $db_header->total_size()) {
@@ -85,14 +93,6 @@ sub parse {
 
         # call the callback, if there is one
         $cb_dispatch{$entry_type}($obj) if defined($cb_dispatch{$entry_type});
-
-        if($first_group_header && defined($cb_dispatch{db}) && $obj->isa('FooPod::GroupHeader')) {
-            $first_group_header = 0;
-
-            my $db = get_db_info($fh, $db_header, $obj, \%parse_dispatch);
-
-            $cb_dispatch{db}($db);
-        }
 
         ## TRACKS
         if(defined($last_track) && defined($cb_dispatch{track}) && !$obj->isa('FooPod::Atom')) {
@@ -119,18 +119,51 @@ sub parse {
             $last_playlist = undef;
         }
 
-        if(defined($cb_dispatch{playlist}) && $obj->isa('FooPod::PlaylistHeader')) {
-            #$last_playlist = playlist_from_playlistheader($obj);
-        }
-
-        if(defined($last_playlist) && $obj->isa('FooPod::PlaylistMetadata')) {
-            # this could be fun...
+        if(defined($cb_dispatch{playlist}) && $obj->isa('FooPod::PlaylistMetadata')) {
+            $last_playlist = playlist_from_playlistmetadata($obj);
         }
 
         if(defined($last_playlist) && $obj->isa('FooPod::Atom')) {
             # this is where it gets tricky...
+            if($obj->atom_type() == 50) {
+                my $pref = atom_payload_as_playlist_pref($fh, $obj);
+
+                $last_playlist->playlistpref($pref);
+            } elsif($obj->atom_type() == 51) {
+                my @data = atom_payload_as_playlist_data($fh, $obj);
+
+                $last_playlist->playlistdata(\@data);
+            } elsif($obj->atom_type() == 100) {
+                # ignore... nothing of interest?
+            } else {
+                my ($type, $string) = atom_payload_as_normal($fh, $obj);
+            
+                if(defined($type)) {
+                    $last_playlist->$type($string);
+                } else {
+                    Carp::carp("Unrecognized atom type ".$obj->atom_type());
+                }
+            }
         }
         ## END PLAYLISTS
+
+        ## ALBUMS
+        if(defined($last_album) && defined($cb_dispatch{album}) && !$obj->isa('FooPod::Atom')) {
+            $cb_dispatch{album}($last_album);
+            $last_album = undef;
+        }
+
+        if(defined($cb_dispatch{album}) && $obj->isa('FooPod::AlbumHeader')) {
+            $last_album = album_from_albumheader($obj);
+        }
+
+        # if we have an atom see which parent it belongs to
+        if(defined($last_album) && $obj->isa('FooPod::Atom')) {
+            # set the appropriate data in the parent
+            my ($type, $string) = atom_payload_as_normal($fh, $obj);
+            $last_album->$type($string);
+        }
+        ## END ALBUMS
 
         if(!$obj->isa('FooPod::Atom')) {
             $offset += $obj->header_size();
@@ -288,7 +321,7 @@ sub parse_playlist_metadata {
         header_size => FooPod::Utils::read_int($fh, $offset + 4, 4),
         total_size => FooPod::Utils::read_int($fh, $offset + 8, 4),
         children => FooPod::Utils::read_int($fh, $offset + 12, 4),
-        song_count => FooPod::Utils::read_int($fh, $offset + 16, 4),
+        songcount => FooPod::Utils::read_int($fh, $offset + 16, 4),
         is_masterplaylist => FooPod::Utils::read_bool($fh, $offset + 20, 1),
         playlistid => FooPod::Utils::read_hex($fh, $offset + 28, 8),
         is_playlist => FooPod::Utils::read_bool($fh, $offset + 42, 2),
@@ -312,61 +345,36 @@ sub parse_playlist_item {
     );
 }
 
-sub get_db_info {
-    my ($fh, $db_header, $obj, $pdr) = @_;
+sub parse_album_group {
+    my ($fh, $offset) = @_;
 
-    my %parse_dispatch = %{$pdr};
-
-    # so we've got the $db_header object from above
-    # and this is our first GroupHeader object. We
-    # need to get all its sibling objects, as well 
-    # as the first child (and only?) of this and the
-    # other GroupHeaders so we can determine the total
-    # number of songs and playlists in this library
-
-    my $track_count = 0;
-    my $playlist_count = 0;
-
-    my $major_offset = $obj->offset();
-    my $major_obj = $obj;
-
-    while(1) {
-        # get the first child
-        my $child_offset = $major_offset + $major_obj->header_size();
-        my $child_type = FooPod::Utils::read_string($fh, $child_offset, 4); 
-        my $child_obj = $parse_dispatch{$child_type}($fh, $child_offset);
-
-        if($child_obj->isa('FooPod::FilesHeader')) {
-            $track_count += $child_obj->children();
-        } elsif($child_obj->isa('FooPod::PlaylistHeader')) {
-            $playlist_count += $child_obj->children();
-        } else {
-            Carp::croak("Unexpected child object of type ".$child_obj->entry_type());
-        }
-
-        $major_offset += $major_obj->total_size();
-
-        if($major_offset >= $db_header->total_size()) {
-            last;
-        }
-
-        my $major_type = FooPod::Utils::read_string($fh, $major_offset, 4);
-        $major_obj = $parse_dispatch{$major_type}($fh, $major_offset);
-    }
-
-    my $db = FooPod::DB->new(
-        filesize => $db_header->total_size(),
-        songcount => $track_count,
-        playlistcount => $playlist_count,
+    return FooPod::AlbumGroup->new(
+        offset => $offset,
+        entry_type => FooPod::Utils::read_string($fh, $offset, 4),
+        header_size => FooPod::Utils::read_int($fh, $offset + 4, 4),
+        total_size => FooPod::Utils::read_int($fh, $offset + 8, 4),
+        children => FooPod::Utils::read_int($fh, $offset + 12, 4),
     );
+}
 
-    return $db;
+sub parse_album_header {
+    my ($fh, $offset) = @_;
+
+    return FooPod::AlbumHeader->new(
+        offset => $offset,
+        entry_type => FooPod::Utils::read_string($fh, $offset, 4),
+        header_size => FooPod::Utils::read_int($fh, $offset + 4, 4),
+        total_size => FooPod::Utils::read_int($fh, $offset + 8, 4),
+        children => FooPod::Utils::read_int($fh, $offset + 12, 4),
+        albumid => FooPod::Utils::read_int($fh, $offset + 16, 4),
+        dbid1 => FooPod::Utils::read_hex($fh, $offset + 20, 8),
+    );
 }
 
 sub track_from_trackheader {
     my ($track_header) = @_;
 
-    my $ret = FooPod::Track->new(
+    return FooPod::Track->new(
         trackid => $track_header->trackid(),
         is_compilation => $track_header->is_compilation(),
         rating => $track_header->rating(),
@@ -413,8 +421,26 @@ sub track_from_trackheader {
         has_gapless => $track_header->has_gapless(),
         nocrossfade => $track_header->nocrossfade(),
     );
+}
 
-    return $ret;
+sub playlist_from_playlistmetadata {
+    my ($playlist_metadata) = @_;
+
+    return FooPod::Playlist->new( 
+        songcount => $playlist_metadata->songcount(),
+        is_masterplaylist => $playlist_metadata->is_masterplaylist(),
+        playlistid => $playlist_metadata->playlistid(),
+        is_podcast => $playlist_metadata->is_podcast(),
+    );
+}
+
+sub album_from_albumheader {
+    my ($album_header) = @_;
+
+    return FooPod::AlbumHeader->new(
+        albumid => $album_header->albumid(),
+        dbid1 => $album_header->dbid1(),
+    );
 }
 
 sub atom_payload_as_normal {
@@ -422,12 +448,67 @@ sub atom_payload_as_normal {
     
     my $size = FooPod::Utils::read_int($fh, $obj->offset() + 28, 4);
     my $string = FooPod::Utils::read_string($fh, $obj->offset() + ($obj->total_size() - $size), $size);
-    $string = Unicode::String::byteswap2($string);
-    $string = Unicode::String::utf16($string)->utf8;
+
+    # podcast mhods are utf8
+    if($obj->atom_type() == 15 || $obj->atom_type() == 16) {
+        $string = Unicode::String::utf8($string)->utf8;
+    } else {
+        $string = Unicode::String::byteswap2($string);
+        $string = Unicode::String::utf16($string)->utf8;
+    }
 
     my $type = FooPod::Atom::type_map($obj->atom_type());
 
     return ($type, $string);
+}
+
+sub atom_payload_as_playlist_pref {
+    my ($fh, $obj) = @_;
+
+    my $offset = $obj->offset();
+
+    return FooPod::PlaylistPref->new(
+        is_live_update => FooPod::Utils::read_bool($fh, $offset + 24, 1),
+        has_check_regex => FooPod::Utils::read_bool($fh, $offset + 25, 1),
+        has_check_limit => FooPod::Utils::read_bool($fh, $offset + 26, 1),
+        limit_item => FooPod::Utils::read_int($fh, $offset + 27, 1),
+        sort_item => FooPod::Utils::read_int($fh, $offset + 28, 1),
+        limit_value => FooPod::Utils::read_int($fh, $offset + 32, 4),
+        match_selected => FooPod::Utils::read_bool($fh, $offset + 36, 1),
+        sort_low => FooPod::Utils::read_int($fh, $offset + 37, 1) == 1 ? 1 : 0,
+    );
+}
+
+sub atom_payload_as_playlist_data {
+    my ($fh, $obj) = @_;
+
+    my @ret = ();
+
+    my $field_count = FooPod::Utils::read_int($fh, $obj->offset() + 35, 1);
+    my $match_rule = FooPod::Utils::read_int($fh, $obj->offset() + 39, 1);
+
+    my $local_offset = $obj->offset() + 160;
+
+    for(my $i = 0; $i < $field_count; ++$i) {
+        my $field = FooPod::Utils::read_int($fh, $local_offset + 3, 1);
+        my $type = FooPod::Utils::read_int($fh, $local_offset + 4, 1);
+        my $action = FooPod::Utils::read_int($fh, $local_offset + 5, 3);
+        my $length = FooPod::Utils::read_int($fh, $local_offset + 55, 1);
+
+        push(
+            @ret,
+            FooPod::PlaylistData->new(
+                field => $field,
+                type => $type,
+                action => $action,
+                data => FooPod::Utils::read_string($fh, $local_offset + 56, $length),
+            )
+        );
+
+        $local_offset += $length + 56;
+    }
+
+    return @ret;
 }
 
 1;

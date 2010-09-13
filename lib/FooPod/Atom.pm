@@ -37,7 +37,7 @@ sub type_map {
         12 => 'composer',
         13 => 'group',
         14 => 'description',
-        15 => 'podcastguid',
+        15 => 'podcasturl',
         16 => 'podcastrss',
         17 => 'chapterdata',
         18 => 'subtitle',
@@ -52,6 +52,15 @@ sub type_map {
         29 => 'sortalbumartist',
         30 => 'sortcomposer',
         31 => 'sorttvshow',
+        50 => 'splpref',
+        51 => 'spldata',
+        52 => 'playlistindex',
+        53 => 'playlistjumptable',
+        100 => 'playlist',
+        200 => 'album',
+        201 => 'artist',
+        202 => 'artistthe',
+        # more? 300 => 'album artist mhii'
     );
 
     return $map{$int};
