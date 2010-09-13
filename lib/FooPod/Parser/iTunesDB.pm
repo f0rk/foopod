@@ -135,6 +135,8 @@ sub parse {
                 $last_playlist->playlistdata(\@data);
             } elsif($obj->atom_type() == 100) {
                 # ignore... nothing of interest?
+            } elsif($obj->atom_type() == 102) {
+                # ignore... nothing of interest?
             } else {
                 my ($type, $string) = atom_payload_as_normal($fh, $obj);
             
