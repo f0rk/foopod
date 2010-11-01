@@ -26,7 +26,7 @@ has 'path' => (
 # pieces of information about the file database,
 # such as the number of direct children of that
 # header object. can be indentifid by 'mhbd' in
-# the iTunesB file.
+# the iTunesDB file.
 has 'db_header_cb' => (
     is => 'ro',
     isa => 'CodeRef',
